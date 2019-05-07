@@ -17,9 +17,10 @@ namespace tensorflow {
 										const T* in, const T* flow,
 										T* out) {
 			CUDA_1D_KERNEL_LOOP(index, nthreads) {
-				const int w = index % width;
-				const int h = (index / width) % height;
-				const int n = index / width / height;
+				const int c = index % channels;
+				const int w = (index / channels) % width;
+				const int h = (index / channels / width) % height;
+				const int n = index / channels / width / height;
 				// Get flow value.
 				const T f_w = ldg(flow + n * height * width * 2 + h * width * 2 + w * 2 + 0);
 				const T f_h = ldg(flow + n * height * width * 2 + h * width * 2 + w * 2 + 1);
@@ -41,16 +42,15 @@ namespace tensorflow {
 			
 				const int feature_size = height * width * channels;
 				const int row_size = width * channels;
-				for (int c = 0; c < channels; c++) {
-					// Calculate interpolation value.
-					const T v00 = ldg(in + n * feature_size + _h0 * row_size + _w0 * channels + c);
-					const T v01 = ldg(in + n * feature_size + _h0 * row_size + _w1 * channels + c);
-					const T v10 = ldg(in + n * feature_size + _h1 * row_size + _w0 * channels + c);
-					const T v11 = ldg(in + n * feature_size + _h1 * row_size + _w1 * channels + c);
+				
+				// Calculate interpolation value.
+				const T v00 = ldg(in + n * feature_size + _h0 * row_size + _w0 * channels + c);
+				const T v01 = ldg(in + n * feature_size + _h0 * row_size + _w1 * channels + c);
+				const T v10 = ldg(in + n * feature_size + _h1 * row_size + _w0 * channels + c);
+				const T v11 = ldg(in + n * feature_size + _h1 * row_size + _w1 * channels + c);
 
-					const int t_index = channels * index + c;
-					out[t_index] = w00 * v00 + w01 * v01 + w10 * v10 + w11 * v11;
-				}
+				out[index] = w00 * v00 + w01 * v01 + w10 * v10 + w11 * v11;
+				
 			}
 		}
 
@@ -61,9 +61,10 @@ namespace tensorflow {
 											const T* in, const T* flow, const T* output_grad,
 											T* in_grad, T* flow_grad) {
 			CUDA_1D_KERNEL_LOOP(index, nthreads) {
-				const int w = index % width;
-				const int h = (index / width) % height;
-				const int n = index / width / height;
+				const int c = index % channels;
+				const int w = (index / channels) % width;
+				const int h = (index / channels / width) % height;
+				const int n = index / channels / width / height;
 				// Get flow value.
 				const T f_w = ldg(flow + n * height * width * 2 + h * width * 2 + w * 2 + 0);
 				const T f_h = ldg(flow + n * height * width * 2 + h * width * 2 + w * 2 + 1);
@@ -85,34 +86,33 @@ namespace tensorflow {
 
 				const int feature_size = height * width * channels;
 				const int row_size = width * channels;
-				T fw_grad_sum = 0, fh_grad_sum = 0;
-				for (int c = 0; c < channels; c++) {
-					// Calculate input grad.
-					const int t_index = channels * index + c;
-					const T grad = ldg(output_grad + t_index);
-					CudaAtomicAdd(in_grad + n * feature_size + _h0 * row_size + _w0 * channels + c,
-						static_cast<T>(w00 * grad));
-					CudaAtomicAdd(in_grad + n * feature_size + _h0 * row_size + _w1 * channels + c,
-						static_cast<T>(w01 * grad));
-					CudaAtomicAdd(in_grad + n * feature_size + _h1 * row_size + _w0 * channels + c,
-						static_cast<T>(w10 * grad));
-					CudaAtomicAdd(in_grad + n * feature_size + _h1 * row_size + _w1 * channels + c,
-						static_cast<T>(w11 * grad));
-					// Calculate flow grad.
-					const T v00 = ldg(in + n * feature_size + _h0 * row_size + _w0 * channels + c);
-					const T v01 = ldg(in + n * feature_size + _h0 * row_size + _w1 * channels + c);
-					const T v10 = ldg(in + n * feature_size + _h1 * row_size + _w0 * channels + c);
-					const T v11 = ldg(in + n * feature_size + _h1 * row_size + _w1 * channels + c);
+				
+				
+				// Calculate input grad.
+				const T grad = ldg(output_grad + index);
+				CudaAtomicAdd(in_grad + n * feature_size + _h0 * row_size + _w0 * channels + c,
+					static_cast<T>(w00 * grad));
+				CudaAtomicAdd(in_grad + n * feature_size + _h0 * row_size + _w1 * channels + c,
+					static_cast<T>(w01 * grad));
+				CudaAtomicAdd(in_grad + n * feature_size + _h1 * row_size + _w0 * channels + c,
+					static_cast<T>(w10 * grad));
+				CudaAtomicAdd(in_grad + n * feature_size + _h1 * row_size + _w1 * channels + c,
+					static_cast<T>(w11 * grad));
+				// Calculate flow grad.
+				const T v00 = ldg(in + n * feature_size + _h0 * row_size + _w0 * channels + c);
+				const T v01 = ldg(in + n * feature_size + _h0 * row_size + _w1 * channels + c);
+				const T v10 = ldg(in + n * feature_size + _h1 * row_size + _w0 * channels + c);
+				const T v11 = ldg(in + n * feature_size + _h1 * row_size + _w1 * channels + c);
 
-					T fw_grad = grad, fh_grad = grad;
-					fw_grad *= (f_h1 - f_h) * (v01 - v00) + (f_h - f_h0) * (v11 - v10);
-					fh_grad *= (f_w1 - f_w) * (v10 - v00) + (f_w - f_w0) * (v11 - v01);
-					fw_grad_sum += fw_grad;
-					fh_grad_sum += fh_grad;
-				}
-				// Save flow grad.
-				flow_grad[n * height * width * 2 + h * width * 2 + w * 2 + 0] = fw_grad_sum;
-				flow_grad[n * height * width * 2 + h * width * 2 + w * 2 + 1] = fh_grad_sum;
+				T fw_grad = grad, fh_grad = grad;
+				fw_grad *= (f_h1 - f_h) * (v01 - v00) + (f_h - f_h0) * (v11 - v10);
+				fh_grad *= (f_w1 - f_w) * (v10 - v00) + (f_w - f_w0) * (v11 - v01);
+				
+				// Add flow grad.
+				CudaAtomicAdd(flow_grad + n * height * width * 2 + h * width * 2 + w * 2 + 0,
+					fw_grad);
+				CudaAtomicAdd(flow_grad + n * height * width * 2 + h * width * 2 + w * 2 + 1,
+					fh_grad);
 			}
 		}
 
@@ -122,7 +122,7 @@ namespace tensorflow {
 			int batch, int height, int width, int channels,
 			const T* in, const T* flow, T* out) {
 				// Launch the CUDA kernel.
-				const int size = batch * height * width;
+				const int size = batch * height * width * channels;
 				CudaLaunchConfig config = GetCudaLaunchConfig(size, d);
 				InverseWarpNHWC<T>
 					<<<config.block_count, config.thread_per_block, 0, d.stream()>>>(
@@ -141,14 +141,17 @@ namespace tensorflow {
 
 				CudaLaunchConfig config;
 				int size;
+				// Set flow_grad to 0.
+				size = batch * height * width * 2;
+				config = GetCudaLaunchConfig(size, d);
+				SetZero<<<config.block_count, config.thread_per_block, 0, d.stream()>>>(
+					config.virtual_thread_count, flow_grad);
 				// Set in_grad to 0.
 				size = batch * height * width * channels;
 				config = GetCudaLaunchConfig(size, d);
 				SetZero<<<config.block_count, config.thread_per_block, 0, d.stream()>>>(
 					config.virtual_thread_count, in_grad);
 				// Launch the CUDA kernel.
-				size = batch * height * width;
-				config = GetCudaLaunchConfig(size, d);
 				InverseWarpGradNHWC<T>
 					<<<config.block_count, config.thread_per_block, 0, d.stream()>>>(
 					config.virtual_thread_count,
